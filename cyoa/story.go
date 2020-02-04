@@ -3,50 +3,71 @@ package cyoa
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 	"text/template"
 )
 
 func init() {
-	tpl = template.Must(template.New("").Parse(defaultHandlerTemplate))
+	tpl = template.Must(template.ParseFiles("template.html"))
 }
 
 var tpl *template.Template
 
-var defaultHandlerTemplate = `
-<!DOCTYPE html>
-<html>
-    <head>
-        <meta charset="utf-8" />
-        <title>Choose Your Own Adventure</title>
-    </head>
-    <body>
-        <h1>{{.Title}}</h1>
-        {{range .Paragraphs}}
-        <p>{{.}}</p>
-        {{end}}
-        <ul>
-            {{range .Options}}
-            <li><a href="/{{.Chapter}}">{{.Text}}</a></li>
-            {{end}}
-        </ul>
-    </body>
-</html>`
+// HandlerOption : to modify handler options
+type HandlerOption func(h *handler)
 
-// NewHandler : the handler
-func NewHandler(s Story) http.Handler {
-	return handler{s}
+// WithTemplate : specify a custom template
+func WithTemplate(t *template.Template) HandlerOption {
+	return func(h *handler) {
+		h.t = t
+	}
+}
+
+//WithPathFunc : specify a path function
+func WithPathFunc(f func(r *http.Request) string) HandlerOption {
+	return func(h *handler) {
+		h.pathFn = f
+	}
+}
+
+// NewHandler : get a new handler for the story
+func NewHandler(s Story, opts ...HandlerOption) http.Handler {
+	h := handler{s, tpl, defaultPathFn}
+	for _, opt := range opts {
+		opt(&h)
+	}
+	return h
 }
 
 type handler struct {
-	s Story
+	s      Story
+	t      *template.Template
+	pathFn func(r *http.Request) string
+}
+
+func defaultPathFn(r *http.Request) string {
+	path := strings.TrimSpace(r.URL.Path)
+	if path == "" || path == "/" {
+		path = "/intro"
+	}
+
+	return path[1:]
 }
 
 func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	err := tpl.Execute(w, h.s["intro"])
-	if err != nil {
-		panic(err)
+	path := h.pathFn(r)
+
+	if chapter, ok := h.s[path]; ok {
+		err := h.t.Execute(w, chapter)
+		if err != nil {
+			log.Printf("%v", err)
+			http.Error(w, "Something went wrong.", http.StatusInternalServerError)
+		}
+		return
 	}
+	http.Error(w, "Chapter not found.", http.StatusNotFound)
 }
 
 // JSONStory : parse json into a Story
